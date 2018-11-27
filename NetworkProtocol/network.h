@@ -36,6 +36,10 @@ struct server_state* server_state_create(const char* cert, const char* key);
 
 void server_state_drop(struct server_state* s);
 
+#define THUMBPRINT_HEX_LENGTH 41 // 40 chars + null terminator
+
+int server_state_register_certificate_thumbprint(struct server_state*s, char thumbprint[THUMBPRINT_HEX_LENGTH]);
+
 // network
 
 struct connection;

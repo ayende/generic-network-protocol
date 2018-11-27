@@ -3,9 +3,43 @@
 
 #include "network.h"
 
+
+struct certificate_thumbprint {
+	char thumbprint[THUMBPRINT_HEX_LENGTH];
+};
+
 struct server_state {
 	SSL_CTX* ctx;
+	size_t certs_len, certs_capacity;
+	struct certificate_thumbprint* certs;
 };
+
+int server_state_register_certificate_thumbprint(struct server_state*s, char thumbprint[THUMBPRINT_HEX_LENGTH]) {
+	if (s->certs_len + 1 >= s->certs_capacity) {
+
+		struct certificate_thumbprint* buffer;
+		int new_size = max(1, s->certs_capacity * 2);
+
+		buffer = realloc(s->certs, new_size);
+		if (buffer == NULL) {
+			push_error(ENOMEM, "Could not allocate memory for thumbprint");
+			return 0;
+		}
+
+		s->certs = buffer;
+		s->certs_capacity = new_size;
+	}
+	
+	memcpy(&s->certs[s->certs_len++], thumbprint, THUMBPRINT_HEX_LENGTH);
+	return 1;
+}
+
+static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
+{
+	// we want to give good errors, so we acccept all certs
+	// and validate them manually
+	return 1;
+}
 
 int configure_context(SSL_CTX *ctx, const char* cert, const char* key)
 {
@@ -28,6 +62,8 @@ int configure_context(SSL_CTX *ctx, const char* cert, const char* key)
 		return 0;
 	}
 
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, verify_callback);
+
 	return 1;
 }
 
@@ -42,12 +78,11 @@ struct server_state* server_state_create(const char* cert, const char* key) {
 		first_time_init_done = 1;
 	}
 
-	state = malloc(sizeof(struct server_state));
+	state = calloc(1, sizeof(struct server_state));
 	if (state == NULL) {
 		push_error(ENOMEM, "Unable to allocate server state");
 		return NULL;
 	}
-	memset(state, 0, sizeof(struct server_state));
 
 	method = TLSv1_2_server_method();
 	if (method == NULL) {
@@ -77,45 +112,117 @@ struct server_state* server_state_create(const char* cert, const char* key) {
 
 
 void server_state_drop(struct server_state* s) {
+	if(s->certs != NULL)
+		free(s->certs);
+
 	SSL_CTX_free(s->ctx);
+
 	free(s);
 }
 
 struct connection {
 	SSL * ssl;
 	int client_fd;
+	struct server_state* server;
 };
 
+int validate_connection_certificate(struct connection * c)
+{
+	ASN1_TIME* time;
+	int day, sec, len;
+	unsigned char digest[SHA_DIGEST_LENGTH];
+	char digest_hex[THUMBPRINT_HEX_LENGTH];
+	const char*err = NULL;
 
+	X509* client_cert = SSL_get_peer_certificate(c->ssl);
+	if (client_cert == NULL) {
+		err = "No certificate was sent, but this is required, aborting.";
+		goto error;
+	}
+	time = X509_get_notAfter(client_cert);
+	if (!ASN1_TIME_diff(&day, &sec, NULL, time)) {
+		push_ssl_errors();
+		err = "Invalid certificate time - NotAfter";
+		goto error;
+	}
+	if (day < 0 || sec < 0) {
+		err = "Certificate expired";
+		goto error;
+	}
+	time = X509_get_notBefore(client_cert);
+	if (!ASN1_TIME_diff(&day, &sec, NULL, time)) {
+		push_ssl_errors();
+		err = "Invalid certificate time - NotBefore";
+		goto error;
+	}
+	if (day > 0 || sec > 0) {
+		err = "Certificate isn't valid yet";
+		goto error;
+	}
+
+	if (!X509_digest(client_cert, EVP_sha1(), digest, &len)) {
+		err = "Failed to compute certificate digest";
+		goto error;
+	}
+
+	for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+		int rc = snprintf(digest_hex + (i * 2), 3/* for the null terminator*/, "%02X", digest[i]);
+		if (rc != 2) {
+			err = "Failed to format certificate digest";
+			goto error;
+		}
+	}
+	for (size_t i = 0; i < c->server->certs_len; i++)
+	{
+		if(_stricmp(digest_hex, c->server->certs[i].thumbprint) == 0)
+			return 1;// found a match!
+	}
+
+	err = "Unfamiliar certificate";
+
+error:
+	connection_write_format(c, "ERR: %s\r\n", err); // notify remote
+	push_error(EINVAL, err);  // notify locally;
+	return 0;
+}
 
 struct connection* connection_create(struct server_state* srv, int socket) {
 	int rc;
-	struct connection* c = malloc(sizeof(struct connection));
+	struct connection* c = calloc(1, sizeof(struct connection));
 	if (c == NULL)
 	{
 		push_error(ENOMEM, "Unable to allocate memory for connection");
 		goto error_cleanup;
 	}
-
-	memset(c, 0, sizeof(struct connection));
+	c->server = srv;
 	c->ssl = SSL_new(srv->ctx);
 	if (c->ssl == NULL)
 	{
+		push_ssl_errors();
 		push_error(ENOMEM, "Failed to create new SSL struct");
 		goto error_cleanup;
 	}
 	c->client_fd = socket;
 	if (!SSL_set_fd(c->ssl, socket))
 	{
+		push_ssl_errors();
 		push_error(EBADF, "Failed to associate the new SSL context with the provided socket");
 		goto error_cleanup;
 	}
 
 	rc = SSL_accept(c->ssl);
-	if (rc == 0) {
-		push_error(ENETRESET, "Could not establish TLS connectionto client: %i", SSL_get_error(c->ssl, rc));
+	if (rc <= 0) {
+		push_ssl_errors();
+		push_error(ENETRESET, "Could not establish TLS connection to client: %i", SSL_get_error(c->ssl, rc));
 		goto error_cleanup;
 	}
+
+	// now need to validate the certificate...
+	if(!validate_connection_certificate(c))
+		goto error_cleanup;
+
+	if (!connection_write(c, "OK\r\n", 4))
+		goto error_cleanup;
 
 	return c;
 
@@ -129,6 +236,7 @@ error_cleanup:
 	}
 	return NULL;
 }
+
 
 
 void connection_drop(struct connection* c) {

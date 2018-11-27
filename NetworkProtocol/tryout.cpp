@@ -59,12 +59,16 @@ int main(int argc, char **argv)
 		goto handle_error;
 	}
 
+	if (!server_state_register_certificate_thumbprint(srv_state, "1776821DB1002B0E2A9B4EE3D5EE14133D367009")) {
+		goto handle_error;
+	}
+
+
 	sock = create_server_socket(4433);
 	if (sock == -1) {
 		goto handle_error;
 	}
 
-	/* Handle connections */
 	while (1) {
 		struct sockaddr_in addr;
 		struct connection* con;
@@ -73,8 +77,10 @@ int main(int argc, char **argv)
 
 		int client = accept(sock, (struct sockaddr*)&addr, &len);
 		if (client == INVALID_SOCKET) {
-			push_error(ENETRESET, "Unable to accept connection, error: %i", GetLastError());
-			goto handle_error; // failure to accept impacts everything, we should close listening
+			push_error(ENETRESET, "Unable to accept connection, error: %i", 
+				GetLastError());
+			// failure to accept impacts everything, we'll abort
+			goto handle_error; 
 		}
 
 		con = connection_create(srv_state, client);
@@ -84,10 +90,6 @@ int main(int argc, char **argv)
 			closesocket(client);
 			print_all_errors();
 			continue; // accept the next connection...
-		}
-
-		if (connection_write_format(con, "Hello World\n") == 0) {
-			goto handle_connection_error;
 		}
 
 		while (1)
