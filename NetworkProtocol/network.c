@@ -12,7 +12,13 @@ struct server_state {
 	SSL_CTX* ctx;
 	size_t certs_len, certs_capacity;
 	struct certificate_thumbprint* certs;
+	struct connection_setup cb;
+	struct server_state_init options;
 };
+
+void server_state_register_connection_setup(struct server_state* s, struct connection_setup cb) {
+	s->cb = cb;
+}
 
 int server_state_register_certificate_thumbprint(struct server_state*s, char thumbprint[THUMBPRINT_HEX_LENGTH]) {
 	if (s->certs_len + 1 >= s->certs_capacity) {
@@ -20,7 +26,7 @@ int server_state_register_certificate_thumbprint(struct server_state*s, char thu
 		struct certificate_thumbprint* buffer;
 		int new_size = max(1, s->certs_capacity * 2);
 
-		buffer = realloc(s->certs, new_size);
+		buffer = realloc(s->certs, new_size * sizeof(struct certificate_thumbprint));
 		if (buffer == NULL) {
 			push_error(ENOMEM, "Could not allocate memory for thumbprint");
 			return 0;
@@ -67,12 +73,56 @@ int configure_context(SSL_CTX *ctx, const char* cert, const char* key)
 	return 1;
 }
 
-struct server_state* server_state_create(const char* cert, const char* key) {
+
+int create_server_socket(int ip, int port)
+{
+	int s;
+	int rc;
+	struct sockaddr_in addr;
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = htonl(ip);
+
+	s = socket(AF_INET, SOCK_STREAM, 0);
+	if (s < 0) {
+		push_error(ENETUNREACH, "Unable to create socket for listening on port: %i", port);
+		return -1;
+	}
+
+	rc = bind(s, (struct sockaddr*)&addr, sizeof(addr));
+	if (rc != 0) {
+		closesocket(s);
+		push_error(rc, "Unable to bind socket on port: %i, error: %i", port, rc);
+		return -1;
+	}
+
+	rc = listen(s, 2);
+
+	if (rc != 0) {
+		closesocket(s);
+		push_error(rc, "Unable to listen to socket on port: %i, error: %i", port, rc);
+		return -1;
+	}
+
+	return s;
+}
+
+struct server_state* server_state_create(struct server_state_init* options) {
 	struct server_state* state;
 	const SSL_METHOD *method;
 	static int first_time_init_done;
 
 	if (!first_time_init_done) {
+#if _WIN32
+		WSADATA wsaData;
+		int rc = WSAStartup(MAKEWORD(2, 2), &wsaData);
+		if (rc != 0) {
+			push_error(rc,"Unable to initialize WSA properly");
+			return NULL;
+		}
+#endif
+
 		SSL_load_error_strings();
 		OpenSSL_add_ssl_algorithms();
 		first_time_init_done = 1;
@@ -83,6 +133,8 @@ struct server_state* server_state_create(const char* cert, const char* key) {
 		push_error(ENOMEM, "Unable to allocate server state");
 		return NULL;
 	}
+
+	state->options = *options;
 
 	method = TLSv1_2_server_method();
 	if (method == NULL) {
@@ -100,10 +152,10 @@ struct server_state* server_state_create(const char* cert, const char* key) {
 		return NULL;
 	}
 
-	if (!configure_context(state->ctx, cert, key)) {
+	if (!configure_context(state->ctx, options->cert, options->key)) {
 		free(state);
 		push_ssl_errors();
-		push_error(EINVAL, "Unable to configure SSL ctx with provided cert(%s) / key (%s)", cert, key);
+		push_error(EINVAL, "Unable to configure SSL ctx with provided cert(%s) / key (%s)", options->cert, options->key);
 		return NULL;
 	}
 	
@@ -117,7 +169,7 @@ void server_state_drop(struct server_state* s) {
 
 	SSL_CTX_free(s->ctx);
 
-	free(s);
+	free(s);	
 }
 
 struct connection {
@@ -273,7 +325,7 @@ int connection_write_format(struct connection* c, const char* format, ...) {
 	return rc;
 }
 
-int connection_read(struct connection *c, void* buf, int len) {
+static int connection_read(struct connection *c, void* buf, int len) {
 
 	int rc = SSL_read(c->ssl, buf, len);
 	if (rc <= 0) {
@@ -281,6 +333,79 @@ int connection_read(struct connection *c, void* buf, int len) {
 		return 0;
 	}
 	return rc;
+}
+
+int server_state_run(struct server_state* s) {
+	int rc;
+	char buffer[256];
+	int socket = create_server_socket(s->options.ip, s->options.port);
+	if (socket == -1) {
+		push_error(EINVAL, "Unable to create socket");
+		return 0;
+	}
+
+	while (1) {
+		struct sockaddr_in addr;
+		struct connection* con;
+		unsigned int len = sizeof(addr);
+		void* connection_state;
+		int raise_connection_error = 1;
+
+		int client = accept(socket, (struct sockaddr*)&addr, &len);
+		if (client == INVALID_SOCKET) {
+			push_error(ENETRESET, "Unable to accept connection, error: %i",
+				GetLastError());
+			// failure to accept impacts everything, we'll abort
+			goto handle_error;
+		}
+
+		con = connection_create(s, client);
+
+		if (con == NULL)
+			goto handle_connection_error;
+
+		connection_state = s->cb.connection_created == NULL ? 
+			NULL :
+			s->cb.connection_created(con);
+
+		while (1)
+		{
+			rc = connection_read(con, buffer, sizeof buffer);
+			if (rc == 0) {
+				goto handle_connection_error;
+			}
+
+			rc = s->cb.connection_recv(con, connection_state, buffer, rc);
+
+			if (rc == 0) {
+				// caller explicitly asked to terminate connection, no need to
+				// do anything else
+				raise_connection_error = 0;
+				goto handle_connection_error;
+			}
+		}
+
+	handle_connection_error:
+		if (s->cb.connection_error != NULL)
+			s->cb.connection_error();
+		consume_errors(NULL, NULL);
+
+		if (con != NULL) {
+			connection_drop(con);
+		}
+		else { // can only happen if we failed to create connection, but already accepted it
+			closesocket(client);
+		}
+
+		// now go back and accept another connection
+	}
+	
+handle_error:
+
+	if (socket != -1)
+		closesocket(socket);
+
+	return 0;
 }
 
 

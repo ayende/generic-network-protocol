@@ -71,6 +71,6 @@ void print_error(struct err* e, void *u) {
 		e->func, e->code, e->msg);
 }
 
-void print_all_errors() {
+void print_all_errors(void) {
 	consume_errors(print_error, NULL);
 }
