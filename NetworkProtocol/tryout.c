@@ -49,11 +49,6 @@ int main(int argc, char **argv)
 
 	rc = server_state_run(srv_state); // app stops here
 
-	if (rc != 0) {
-		goto handle_error;
-	}
-
-
 handle_error:
 
 	if(srv_state != NULL)
@@ -62,5 +57,5 @@ handle_error:
 	print_all_errors();
 	
 
-	return EINVAL;
+	return rc;
 }

@@ -5,9 +5,6 @@
 #include "network.h"
 #include <string.h>
 
-
-
-
 struct certificate_thumbprint {
 	char thumbprint[THUMBPRINT_HEX_LENGTH];
 };
@@ -94,7 +91,7 @@ int create_server_socket(int ip, int port)
 
 	rc = bind(s, (struct sockaddr*)&addr, sizeof(addr));
 	if (rc != 0) {
-		closesocket(s);
+		close(s);
 		push_error(rc, "Unable to bind socket on port: %i, error: %i", port, rc);
 		return -1;
 	}
@@ -102,7 +99,7 @@ int create_server_socket(int ip, int port)
 	rc = listen(s, 2);
 
 	if (rc != 0) {
-		closesocket(s);
+		close(s);
 		push_error(rc, "Unable to listen to socket on port: %i, error: %i", port, rc);
 		return -1;
 	}
@@ -227,7 +224,7 @@ int validate_connection_certificate(struct connection * c)
 	}
 	for (size_t i = 0; i < c->server->certs_len; i++)
 	{
-		if(strcasecmp(digest_hex, c->server->certs[i].thumbprint) == 0)
+		if(strncasecmp(digest_hex, c->server->certs[i].thumbprint, THUMBPRINT_HEX_LENGTH) == 0)
 			return 1;// found a match!
 	}
 
@@ -300,7 +297,7 @@ error_cleanup:
 
 void connection_drop(struct connection* c) {
 	SSL_free(c->ssl);
-	closesocket(c->client_fd);
+	close(c->client_fd);
 	free(c);
 }
 
@@ -382,6 +379,9 @@ int server_state_run(struct server_state* s) {
 				goto handle_connection_error;
 			}
 
+			if (strncasecmp("quit\r\n", buffer, 6) == 0)
+				goto close_connection;
+
 			rc = s->cb.connection_recv(con, connection_state, buffer, rc);
 
 			if (rc == 0) {
@@ -401,16 +401,17 @@ int server_state_run(struct server_state* s) {
 			connection_drop(con);
 		}
 		else { // can only happen if we failed to create connection, but already accepted it
-			closesocket(client);
+			close(client);
 		}
 
 		// now go back and accept another connection
 	}
-	
+
+close_connection:
 handle_error:
 
 	if (socket != -1)
-		closesocket(socket);
+		close(socket);
 
 	return 0;
 }

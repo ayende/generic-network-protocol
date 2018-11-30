@@ -8,8 +8,8 @@ int GetLastError() {
 
 #else
 
-int strcasecmp(const char *s1, const char *s2) {
-	return _stricmp(s1, s2);
+int strncasecmp(const char *s1, const char *s2, size_t size) {
+	return _strnicmp(s1, s2, size	);
 }
 
 int close(int socket) {
@@ -24,6 +24,6 @@ int network_one_time_init() {
 	WSADATA wsaData;
 	return WSAStartup(MAKEWORD(2, 2), &wsaData);
 #else
-	return 1;
+	return 0;
 #endif
 }
