@@ -179,7 +179,7 @@ int validate_connection_certificate(struct connection * c)
 {
 	int free_err = 0;
 	ASN1_TIME* time;
-	int day, sec, len, rc;
+	int day, sec, len, rc = 0;
 	unsigned char digest[SHA_DIGEST_LENGTH];
 	char digest_hex[THUMBPRINT_HEX_LENGTH];
 	char*err = NULL;
@@ -224,8 +224,11 @@ int validate_connection_certificate(struct connection * c)
 	}
 	for (size_t i = 0; i < c->server->certs_len; i++)
 	{
-		if(strncasecmp(digest_hex, c->server->certs[i].thumbprint, THUMBPRINT_HEX_LENGTH) == 0)
-			return 1;// found a match!
+		if (strncasecmp(digest_hex, c->server->certs[i].thumbprint, THUMBPRINT_HEX_LENGTH) == 0)
+		{
+			rc = 1;
+			goto done;
+		}
 	}
 
 	rc = asprintf(&err, "Unfamiliar certificate %s", digest_hex);
@@ -239,7 +242,11 @@ error:
 	push_error(EINVAL, err);  // notify locally;
 	if (free_err)
 		free(err);
-	return 0;
+	rc = 0;
+done:
+	if (client_cert != NULL)
+		X509_free(client_cert);
+	return rc;
 }
 
 struct connection* connection_create(struct server_state* srv, int socket) {
@@ -341,6 +348,7 @@ static int connection_read(struct connection *c, void* buf, int len) {
 
 int server_state_run(struct server_state* s) {
 	int rc;
+	int accept_more_connections = 1;
 	char buffer[256];
 	int socket = create_server_socket(s->options.ip, s->options.port);
 	if (socket == -1) {
@@ -348,12 +356,11 @@ int server_state_run(struct server_state* s) {
 		return 0;
 	}
 
-	while (1) {
+	while (accept_more_connections) {
 		struct sockaddr_in addr;
 		struct connection* con;
 		unsigned int len = sizeof(addr);
 		void* connection_state;
-		int raise_connection_error = 1;
 
 		int client = accept(socket, (struct sockaddr*)&addr, &len);
 		if (client == INVALID_SOCKET) {
@@ -376,19 +383,20 @@ int server_state_run(struct server_state* s) {
 		{
 			rc = connection_read(con, buffer, sizeof buffer);
 			if (rc == 0) {
-				goto handle_connection_error;
+				break;
 			}
 
 			if (strncasecmp("quit\r\n", buffer, 6) == 0)
-				goto close_connection;
+			{
+				accept_more_connections = 0;
+				break;
+			}
 
 			rc = s->cb.connection_recv(con, connection_state, buffer, rc);
 
 			if (rc == 0) {
-				// caller explicitly asked to terminate connection, no need to
-				// do anything else
-				raise_connection_error = 0;
-				goto handle_connection_error;
+				
+				break;
 			}
 		}
 
@@ -407,13 +415,12 @@ int server_state_run(struct server_state* s) {
 		// now go back and accept another connection
 	}
 
-close_connection:
 handle_error:
 
 	if (socket != -1)
 		close(socket);
 
-	return 0;
+	return !accept_more_connections;
 }
 
 
