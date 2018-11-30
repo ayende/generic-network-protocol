@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include "platform.h"
 
 struct connection;
 struct server_state;

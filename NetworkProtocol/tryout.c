@@ -1,11 +1,5 @@
 #include <stdio.h>
 #include <stdarg.h>
-#if _WIN32
-#include <windows.h>
-#else
-#include <netinet/ip.h>
-#include <errno.h>
-#endif
 #include "network.h"
 
 

@@ -5,27 +5,6 @@
 #include "network.h"
 #include <string.h>
 
-#if !_WIN32
-#include <netinet/in.h>
-#include <errno.h>
-#include <unistd.h>
-#include <strings.h>
-
-#define INVALID_SOCKET -1
-
-int closesocket(int socket) {
-	return close(socket);
-}
-
-int GetLastError() {
-	return errno;
-}
-
-#else
-int strcasecmp(const char *s1, const char *s2) {
-	return _stricmp(s1, s2);
-}
-#endif
 
 
 
@@ -137,14 +116,11 @@ struct server_state* server_state_create(struct server_state_init* options) {
 	static int first_time_init_done;
 
 	if (!first_time_init_done) {
-#if _WIN32
-		WSADATA wsaData;
-		int rc = WSAStartup(MAKEWORD(2, 2), &wsaData);
+		int rc = network_one_time_init();
 		if (rc != 0) {
-			push_error(rc,"Unable to initialize WSA properly");
+			push_error(rc, "Unable to initialize network properly %i", rc);
 			return NULL;
 		}
-#endif
 
 		SSL_load_error_strings();
 		OpenSSL_add_ssl_algorithms();
@@ -158,11 +134,9 @@ struct server_state* server_state_create(struct server_state_init* options) {
 	}
 
 	state->options = *options;
-#if _WIN32
-	method = TLSv1_2_server_method();
-#else
-	method = TLS_server_method();
-#endif
+
+	method = get_server_method();
+
 	if (method == NULL) {
 		free(state);
 		push_ssl_errors();

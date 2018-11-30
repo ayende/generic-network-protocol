@@ -7,11 +7,7 @@
 #include "network.h"
 
 
-#ifdef _MSC_VER
-_declspec(thread)
-#else
-__thread
-#endif
+thread_local_variable
 struct err* current_thread_err;
 
 
