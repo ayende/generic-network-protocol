@@ -1,6 +1,11 @@
 #include <stdio.h>
 #include <stdarg.h>
+#if _WIN32
 #include <windows.h>
+#else
+#include <netinet/ip.h>
+#include <errno.h>
+#endif
 #include "network.h"
 
 
@@ -21,8 +26,8 @@ int main(int argc, char **argv)
 	int sock = -1;
 	struct server_state* srv_state;
 
-	const char* cert = "c:\\Work\\temp\\example-com.cert.pem";
-	const char* key = "c:\\Work\\temp\\example-com.key.pem";
+	const char* cert = "example-com.cert.pem";
+	const char* key = "example-com.key.pem";
 
 	struct server_state_init options = { cert, key, INADDR_ANY, 4433 };
 	srv_state = server_state_create(&options);
@@ -41,6 +46,12 @@ int main(int argc, char **argv)
 	if (!server_state_register_certificate_thumbprint(srv_state, "1776821DB1002B0E2A9B4EE3D5EE14133D367009")) {
 		goto handle_error;
 	}
+
+	if (!server_state_register_certificate_thumbprint(srv_state, "AE535D83572189D3EDFD1568DC76275BE33B07F5")) {
+		goto handle_error;
+	}
+
+	printf("Ready...\n");
 
 	rc = server_state_run(srv_state); // app stops here
 

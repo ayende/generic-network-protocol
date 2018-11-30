@@ -1,7 +1,32 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-
+#include <time.h>
+#include <openssl/asn1.h>
 #include "network.h"
+#include <string.h>
+
+#if !_WIN32
+#include <netinet/in.h>
+#include <errno.h>
+#include <unistd.h>
+#include <strings.h>
+
+#define INVALID_SOCKET -1
+
+int closesocket(int socket) {
+	return close(socket);
+}
+
+int GetLastError() {
+	return errno;
+}
+
+#else
+int strcasecmp(const char *s1, const char *s2) {
+	return _stricmp(s1, s2);
+}
+#endif
+
 
 
 struct certificate_thumbprint {
@@ -20,11 +45,11 @@ void server_state_register_connection_setup(struct server_state* s, struct conne
 	s->cb = cb;
 }
 
-int server_state_register_certificate_thumbprint(struct server_state*s, char thumbprint[THUMBPRINT_HEX_LENGTH]) {
+int server_state_register_certificate_thumbprint(struct server_state*s, const char* thumbprint) {
 	if (s->certs_len + 1 >= s->certs_capacity) {
 
 		struct certificate_thumbprint* buffer;
-		int new_size = max(1, s->certs_capacity * 2);
+		int new_size = s->certs_capacity < 1 ? 1 : s->certs_capacity * 2;
 
 		buffer = realloc(s->certs, new_size * sizeof(struct certificate_thumbprint));
 		if (buffer == NULL) {
@@ -34,6 +59,11 @@ int server_state_register_certificate_thumbprint(struct server_state*s, char thu
 
 		s->certs = buffer;
 		s->certs_capacity = new_size;
+	}
+
+	if (strlen(thumbprint) != THUMBPRINT_HEX_LENGTH -1 /*null terminator */) {
+		push_error(EINVAL, "Unexpected thmbuprint size");
+		return 0;
 	}
 	
 	memcpy(&s->certs[s->certs_len++], thumbprint, THUMBPRINT_HEX_LENGTH);
@@ -49,13 +79,6 @@ static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 
 int configure_context(SSL_CTX *ctx, const char* cert, const char* key)
 {
-	int rc = SSL_CTX_set_ecdh_auto(ctx, 1);
-	if (rc == 0) {
-		push_ssl_errors();
-		push_error(EINVAL, "Unable setup ECDH negotiation");
-		return 0;
-	}
-
 	if (SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM) <= 0) {
 		push_ssl_errors();
 		push_error(EINVAL, "Unable register certificiate file: %s", cert);
@@ -135,8 +158,11 @@ struct server_state* server_state_create(struct server_state_init* options) {
 	}
 
 	state->options = *options;
-
+#if _WIN32
 	method = TLSv1_2_server_method();
+#else
+	method = TLS_server_method();
+#endif
 	if (method == NULL) {
 		free(state);
 		push_ssl_errors();
@@ -180,11 +206,12 @@ struct connection {
 
 int validate_connection_certificate(struct connection * c)
 {
+	int free_err = 0;
 	ASN1_TIME* time;
-	int day, sec, len;
+	int day, sec, len, rc;
 	unsigned char digest[SHA_DIGEST_LENGTH];
 	char digest_hex[THUMBPRINT_HEX_LENGTH];
-	const char*err = NULL;
+	char*err = NULL;
 
 	X509* client_cert = SSL_get_peer_certificate(c->ssl);
 	if (client_cert == NULL) {
@@ -226,15 +253,21 @@ int validate_connection_certificate(struct connection * c)
 	}
 	for (size_t i = 0; i < c->server->certs_len; i++)
 	{
-		if(_stricmp(digest_hex, c->server->certs[i].thumbprint) == 0)
+		if(strcasecmp(digest_hex, c->server->certs[i].thumbprint) == 0)
 			return 1;// found a match!
 	}
 
-	err = "Unfamiliar certificate";
+	rc = asprintf(&err, "Unfamiliar certificate %s", digest_hex);
+	if (rc == -1)
+		err = "Unfamiliar cert";
+	else
+		free_err = 1;
 
 error:
 	connection_write_format(c, "ERR: %s\r\n", err); // notify remote
 	push_error(EINVAL, err);  // notify locally;
+	if (free_err)
+		free(err);
 	return 0;
 }
 

@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+struct connection;
+struct server_state;
+
 // error handling
 
 struct err {
@@ -18,7 +21,7 @@ struct err {
 
 void push_error_internal(const char* file, int line, const char *func, int code, const char* format, ...);
 
-#define push_error(code, format, ...) push_error_internal(__FILE__, __LINE__, __func__, code, format, __VA_ARGS__)
+#define push_error(code, format, ...) push_error_internal(__FILE__, __LINE__, __func__, code, format, ##__VA_ARGS__)
 
 typedef void(*error_callback)(struct err* e, void * u);
 
@@ -30,7 +33,6 @@ void push_ssl_errors();
 
 // ssl
 
-struct server_state;
 
 struct server_state_init {
 	const char* cert;
@@ -45,7 +47,7 @@ void server_state_drop(struct server_state* s);
 
 #define THUMBPRINT_HEX_LENGTH 41 // 40 chars + null terminator
 
-int server_state_register_certificate_thumbprint(struct server_state*s, char thumbprint[THUMBPRINT_HEX_LENGTH]);
+int server_state_register_certificate_thumbprint(struct server_state*s, const char* thumbprint);
 
 struct connection_setup {
 
@@ -69,7 +71,6 @@ int server_state_run(struct server_state* s);
 
 // network
 
-struct connection;
 
 struct connection* connection_create(struct server_state* srv, int socket);
 
@@ -82,3 +83,5 @@ int connection_write_format(struct connection* c, const char* format, ...);
 // util
 
 int vasprintf(char **strp, const char *format, va_list ap);
+
+int asprintf(char **strp, const char *format, ...);

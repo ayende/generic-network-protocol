@@ -37,3 +37,6 @@
 
 /NetworkProtocol/*.filters
 /NetworkProtocol/*.user
+/Client/bin/
+/Client/obj/
+/NetworkProtocol/np

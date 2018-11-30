@@ -161,8 +161,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Makefile">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="vasprintf.c" />
-    <ClCompile Include="tryout.cpp" />
+    <ClCompile Include="tryout.c" />
     <ClCompile Include="errors.c" />
     <ClCompile Include="network.c" />
   </ItemGroup>

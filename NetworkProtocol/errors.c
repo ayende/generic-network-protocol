@@ -10,7 +10,7 @@
 #ifdef _MSC_VER
 _declspec(thread)
 #else
-thread_local
+__thread
 #endif
 struct err* current_thread_err;
 
