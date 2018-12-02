@@ -23,6 +23,7 @@ int GetLastError();
 
 int strncasecmp(const char *s1, const char *s2, size_t size);
 int close(int socket);
+char * strnstr(const char *s, const char *find, size_t slen);
 
 #endif
 

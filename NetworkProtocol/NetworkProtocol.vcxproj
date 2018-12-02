@@ -165,12 +165,14 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="platform.c" />
+    <ClCompile Include="protocol.c" />
     <ClCompile Include="vasprintf.c" />
     <ClCompile Include="tryout.c" />
     <ClCompile Include="errors.c" />
     <ClCompile Include="network.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="internal.h" />
     <ClInclude Include="network.h" />
     <ClInclude Include="platform.h" />
   </ItemGroup>

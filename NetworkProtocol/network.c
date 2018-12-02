@@ -4,18 +4,7 @@
 #include <openssl/asn1.h>
 #include "network.h"
 #include <string.h>
-
-struct certificate_thumbprint {
-	char thumbprint[THUMBPRINT_HEX_LENGTH];
-};
-
-struct server_state {
-	SSL_CTX* ctx;
-	size_t certs_len, certs_capacity;
-	struct certificate_thumbprint* certs;
-	struct connection_setup cb;
-	struct server_state_init options;
-};
+#include "internal.h"
 
 void server_state_register_connection_setup(struct server_state* s, struct connection_setup cb) {
 	s->cb = cb;
@@ -169,12 +158,6 @@ void server_state_drop(struct server_state* s) {
 	free(s);	
 }
 
-struct connection {
-	SSL * ssl;
-	int client_fd;
-	struct server_state* server;
-};
-
 int validate_connection_certificate(struct connection * c)
 {
 	int free_err = 0;
@@ -257,6 +240,11 @@ struct connection* connection_create(struct server_state* srv, int socket) {
 		push_error(ENOMEM, "Unable to allocate memory for connection");
 		goto error_cleanup;
 	}
+	c->buffer = malloc(MSG_SIZE);
+	if (c->buffer == NULL) {
+		push_error(ENOMEM, "Unable to allocate memory for connection's buffer");
+		goto error_cleanup;
+	}
 	c->server = srv;
 	c->ssl = SSL_new(srv->ctx);
 	if (c->ssl == NULL)
@@ -295,6 +283,8 @@ error_cleanup:
 			SSL_free(c->ssl);
 			c->ssl = NULL;
 		}
+		if (c->buffer != NULL)
+			free(c->buffer);
 		free(c);
 	}
 	return NULL;
@@ -305,6 +295,7 @@ error_cleanup:
 void connection_drop(struct connection* c) {
 	SSL_free(c->ssl);
 	close(c->client_fd);
+	free(c->buffer);
 	free(c);
 }
 
@@ -336,7 +327,7 @@ int connection_write_format(struct connection* c, const char* format, ...) {
 	return rc;
 }
 
-static int connection_read(struct connection *c, void* buf, int len) {
+int connection_read(struct connection *c, void* buf, int len) {
 
 	int rc = SSL_read(c->ssl, buf, len);
 	if (rc <= 0) {
@@ -349,7 +340,6 @@ static int connection_read(struct connection *c, void* buf, int len) {
 int server_state_run(struct server_state* s) {
 	int rc;
 	int accept_more_connections = 1;
-	char buffer[256];
 	int socket = create_server_socket(s->options.ip, s->options.port);
 	if (socket == -1) {
 		push_error(EINVAL, "Unable to create socket");
@@ -381,18 +371,21 @@ int server_state_run(struct server_state* s) {
 
 		while (1)
 		{
-			rc = connection_read(con, buffer, sizeof buffer);
-			if (rc == 0) {
+			struct cmd* cmd = read_message(con);
+			if (cmd == NULL) {
 				break;
 			}
 
-			if (strncasecmp("quit\r\n", buffer, 6) == 0)
+			if (_stricmp("quit", cmd->argv[0]) == 0)
 			{
+				cmd_drop(cmd);
 				accept_more_connections = 0;
 				break;
 			}
 
-			rc = s->cb.connection_recv(con, connection_state, buffer, rc);
+			rc = s->cb.connection_recv(cmd, connection_state);
+
+			cmd_drop(cmd);
 
 			if (rc == 0) {
 				

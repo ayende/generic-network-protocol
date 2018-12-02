@@ -10,8 +10,15 @@ void on_connection_dropped(struct connection* connection, void* state) {
 
 }
 
-int on_connection_recv(struct connection* connection, void* state, void* buffer, size_t len) {
-	return connection_write(connection, buffer, len);
+int on_connection_recv(struct cmd* cmd, void* state) {
+	int rc;
+	if (strcmp("GET", cmd->argv[0]) == 0 && cmd->argc > 1) {
+		rc = connection_reply_format(cmd, cmd->argv[1]);
+	}
+	else {
+		rc = connection_reply_format(cmd, "Unknown command: %s", cmd->argv[0]);
+	}
+	return rc;
 }
 
 int main(int argc, char **argv)

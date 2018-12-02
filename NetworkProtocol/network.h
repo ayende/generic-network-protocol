@@ -8,6 +8,25 @@
 struct connection;
 struct server_state;
 
+// commands
+
+struct header {
+	char* key;
+	char* value;
+};
+
+struct cmd {
+	struct connection* connection;
+	char** argv;
+	int argc;
+	struct header* headers;
+	int headers_count;
+	char* sequence;
+};
+
+void cmd_drop(struct cmd * cmd);
+
+
 // error handling
 
 struct err {
@@ -59,10 +78,7 @@ struct connection_setup {
 	void (*connection_dropped)(struct connection* connection, 
 		void* state);
 
-	int (*connection_recv)(struct connection* connection, 
-		void* state, 
-		void* buffer, 
-		size_t len);
+	int (*connection_recv)(struct cmd* cmd,  void* state);
 };
 
 
@@ -77,9 +93,10 @@ struct connection* connection_create(struct server_state* srv, int socket);
 
 void connection_drop(struct connection* c);
 
-int connection_write(struct connection* c, void* buf, size_t len);
+int connection_reply(struct cmd* c, void* buf, size_t len);
 
-int connection_write_format(struct connection* c, const char* format, ...);
+int connection_reply_format(struct cmd* c, const char* format, ...);
+
 
 // util
 

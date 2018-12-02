@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Security;
@@ -28,13 +29,43 @@ namespace Client
                 var writer = new StreamWriter(ssl);
                 var reader = new StreamReader(ssl);
 
-                while (true)
+                var status = reader.ReadLine();
+                if (status != "OK")
                 {
-                    Console.WriteLine(reader.ReadLine());
-                    var str = Console.ReadLine();
-                    writer.WriteLine(str);
-                    writer.Flush();
+                    Console.WriteLine("Connection error: " + status);
                 }
+
+
+                writer.Write("GET employees/1-A\r\nSequence: 32\r\n\r\n");
+                writer.Flush();
+
+                var  headers = new Dictionary<string, string>();
+                status = reader.ReadLine();
+
+                string line;
+
+                while ((line = reader.ReadLine()) != null && line.Length > 0)
+                {
+                    var parts = line.Split(":");
+                    headers[parts[0]] = parts[1].Trim();
+                }
+
+                string val = null;
+                if (headers.TryGetValue("Size", out var sizeStr) && int.TryParse(sizeStr, out var size))
+                {
+                    val = string.Create(size, reader, (span, state) =>
+                    {
+                        state.ReadBlock(span);
+                    });
+                }
+
+                if (status != "OK")
+                {
+                    Console.WriteLine("ERROR! " + status);
+                }
+
+                Console.WriteLine(val);
+
             }
         }
     }
