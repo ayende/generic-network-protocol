@@ -376,7 +376,7 @@ int server_state_run(struct server_state* s) {
 				break;
 			}
 
-			if (_stricmp("quit", cmd->argv[0]) == 0)
+			if (strcasecmp("quit", cmd->argv[0]) == 0)
 			{
 				cmd_drop(cmd);
 				accept_more_connections = 0;

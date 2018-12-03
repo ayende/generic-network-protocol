@@ -9,34 +9,16 @@ int GetLastError() {
 #else
 
 int strncasecmp(const char *s1, const char *s2, size_t size) {
-	return _strnicmp(s1, s2, size	);
+	return _strnicmp(s1, s2, size);
+}
+
+
+int strcasecmp(const char *s1, const char *s2) {
+	return _stricmp(s1, s2);
 }
 
 int close(int socket) {
 	return closesocket(socket);
-}
-
-// taken from:
-// https://github.com/lattera/freebsd/blob/master/lib/libc/string/strnstr.c
-char *
-strnstr(const char *s, const char *find, size_t slen)
-{
-	char c, sc;
-	size_t len;
-
-	if ((c = *find++) != '\0') {
-		len = strlen(find);
-		do {
-			do {
-				if (slen-- < 1 || (sc = *s++) == '\0')
-					return (NULL);
-			} while (sc != c);
-			if (len > slen)
-				return (NULL);
-		} while (strncmp(s, find, len) != 0);
-		s--;
-	}
-	return ((char *)s);
 }
 
 #endif

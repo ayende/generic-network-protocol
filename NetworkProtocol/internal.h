@@ -5,7 +5,7 @@
 #include <time.h>
 #include <openssl/asn1.h>
 #include "network.h"
-#include <string.h>
+
 
 #define MSG_SIZE 8192
 
@@ -37,3 +37,5 @@ int connection_read(struct connection *c, void* buf, int len);
 int connection_write(struct connection* c, void* buf, size_t len);
 
 int connection_write_format(struct connection* c, const char* format, ...);
+
+char * strnstr(const char *s, const char *find, size_t slen);

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdarg.h>
 #include "network.h"
 
@@ -12,7 +13,7 @@ void on_connection_dropped(struct connection* connection, void* state) {
 
 int on_connection_recv(struct cmd* cmd, void* state) {
 	int rc;
-	if (strcmp("GET", cmd->argv[0]) == 0 && cmd->argc > 1) {
+	if (strcasecmp("GET", cmd->argv[0]) == 0 && cmd->argc > 1) {
 		rc = connection_reply_format(cmd, cmd->argv[1]);
 	}
 	else {

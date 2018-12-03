@@ -166,6 +166,7 @@
     </ClCompile>
     <ClCompile Include="platform.c" />
     <ClCompile Include="protocol.c" />
+    <ClCompile Include="utils.c" />
     <ClCompile Include="vasprintf.c" />
     <ClCompile Include="tryout.c" />
     <ClCompile Include="errors.c" />

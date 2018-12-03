@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <errno.h>
 #include <unistd.h>
+#include <string.h>
 #include <strings.h>
 
 #define INVALID_SOCKET -1
@@ -17,17 +18,22 @@ int GetLastError();
 
 #define get_server_method TLS_server_method
 
+#define strtok_s strtok_r
+
 #else
 
 #define get_server_method TLSv1_2_server_method
 
+int strcasecmp(const char *s1, const char *s2);
+
 int strncasecmp(const char *s1, const char *s2, size_t size);
+
 int close(int socket);
-char * strnstr(const char *s, const char *find, size_t slen);
 
 #endif
 
 int network_one_time_init();
+
 
 
 #ifdef _MSC_VER

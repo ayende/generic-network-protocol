@@ -104,7 +104,7 @@ static struct cmd* parse_command(struct connection* c, char* buffer, size_t len)
 		cmd->headers[cmd->headers_count - 1].key = arg;
 		cmd->headers[cmd->headers_count - 1].value = ws_ctx;
 
-		if (_stricmp("Sequence", arg) == 0) {
+		if (strcasecmp("Sequence", arg) == 0) {
 			cmd->sequence = ws_ctx;
 		}
 	}
@@ -145,7 +145,7 @@ struct cmd* read_message(struct connection * c) {
 				memmove(c->buffer, final + 4, c->used_buffer);
 				return cmd;
 			}
-			to_scan = max(c->used_buffer - 3, 0);
+			to_scan = c->used_buffer - 3 < 0 ? 0 : c->used_buffer - 3;
 		}
 		to_read = MSG_SIZE - c->used_buffer;
 		if (to_read == 0) {
