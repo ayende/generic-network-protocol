@@ -65,6 +65,7 @@ static struct cmd* parse_command(struct connection* c, char* buffer, size_t len)
 		goto error_cleanup;
 	}
 	cmd->connection = c;
+	cmd->cmd_buffer = copy;
 	line = strtok_s(copy, "\r\n", &line_ctx);
 	if (line == NULL) {
 		push_error(EINVAL, "Unable to find \r\n in the provided buffer");
@@ -125,6 +126,8 @@ void cmd_drop(struct cmd * cmd)
 		free(cmd->argv);
 	if (cmd->headers != NULL)
 		free(cmd->headers);
+	if (cmd->cmd_buffer != NULL)
+		free(cmd->cmd_buffer);
 	free(cmd);
 }
 
@@ -136,7 +139,7 @@ struct cmd* read_message(struct connection * c) {
 		// first, need to check if we already
 		// read the value from the network
 		if (c->used_buffer > 0) {
-			char* final = strnstr(c->buffer + to_scan, "\r\n\r\n", c->used_buffer);
+			char* final = strnstr(c->buffer + to_scan, "\r\n\r\n", c->used_buffer - to_scan);
 			if (final != NULL) {
 				struct cmd* cmd = parse_command(c, c->buffer, final - c->buffer + 2/*include one \r\n*/);
 				// now move the rest of the buffer that doesn't belong to this command 

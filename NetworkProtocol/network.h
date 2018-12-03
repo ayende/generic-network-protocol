@@ -22,6 +22,8 @@ struct cmd {
 	struct header* headers;
 	int headers_count;
 	char* sequence;
+
+	char* cmd_buffer;
 };
 
 void cmd_drop(struct cmd * cmd);
