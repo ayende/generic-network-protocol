@@ -109,6 +109,8 @@ struct server_state* server_state_create(struct server_state_init* options) {
 		}
 
 		SSL_load_error_strings();
+		ERR_load_BIO_strings();
+		ERR_load_crypto_strings();
 		OpenSSL_add_ssl_algorithms();
 		first_time_init_done = 1;
 	}
