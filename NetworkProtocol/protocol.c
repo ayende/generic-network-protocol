@@ -47,7 +47,7 @@ int connection_reply_format(struct cmd* c, const char* format, ...) {
 }
 
 
-static struct cmd* parse_command(struct connection* c, char* buffer, size_t len) {
+static cmd_t* parse_command(tls_uv_connection_state_t* c, char* buffer, size_t len) {
 	char* line_ctx = NULL, *ws_ctx = NULL, *line, *arg;
 	struct cmd* cmd = NULL;
 	char* copy = malloc(len+1);
@@ -132,33 +132,44 @@ void cmd_drop(struct cmd * cmd)
 }
 
 
-struct cmd* read_message(struct connection * c) {
-	int rc, to_read, to_scan = 0;
-	do
+int read_message(tls_uv_connection_state_t* c, void* buffer, int nread) {
+	while (nread > 0)
 	{
+		int to_copy = MSG_SIZE - c->used_buffer;
+		to_copy = to_copy < nread ? to_copy : nread;
+		nread -= to_copy;
+		memcpy(c->buffer, buffer, to_copy);
+		c->used_buffer += to_copy;
+		
 		// first, need to check if we already
 		// read the value from the network
 		if (c->used_buffer > 0) {
-			char* final = strnstr(c->buffer + to_scan, "\r\n\r\n", c->used_buffer - to_scan);
+			char* final = strnstr(c->buffer + c->to_scan, "\r\n\r\n", c->used_buffer - c->to_scan);
 			if (final != NULL) {
-				struct cmd* cmd = parse_command(c, c->buffer, final - c->buffer + 2/*include one \r\n*/);
+				cmd_t* cmd = parse_command(c, c->buffer, final - c->buffer + 2/*include one \r\n*/);
+
+				int rc = c->server->options.handler->connection_recv(c, cmd);
+
+				// explicitly not freeing it, this should be done by the caller
+				// cmd_drop(cmd);
+
+				if (rc == 0)
+					return 0;
+
 				// now move the rest of the buffer that doesn't belong to this command 
 				// adding 4 for the length of the msg separator (\r\n\r\n)
 				c->used_buffer -= (final + 4) - c->buffer;
 				memmove(c->buffer, final + 4, c->used_buffer);
-				return cmd;
+				c->to_scan = 0;
+				continue;
 			}
-			to_scan = c->used_buffer - 3 < 0 ? 0 : c->used_buffer - 3;
+			c->to_scan = c->used_buffer - 3 < 0 ? 0 : c->used_buffer - 3;
 		}
-		to_read = MSG_SIZE - c->used_buffer;
-		if (to_read == 0) {
+		if (MSG_SIZE - c->used_buffer == 0) {
 			push_error(EINVAL, "Message size is too large, after 8KB, "
 				"couldn't find \r\n separator, aborting connection.");
-			return NULL;
+			return 0;
 		}
-		rc = connection_read(c, c->buffer + c->used_buffer, to_read);
-		if (rc == 0)
-			return NULL; // broken connection, probably
-		c->used_buffer += rc;
-	} while (1);
+	}
+	return 1;
 }

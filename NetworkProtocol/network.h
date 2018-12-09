@@ -3,20 +3,55 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <openssl/ssl.h>
+#include <openssl/asn1.h>
+#include <openssl/err.h>
+#include <uv.h>
 #include "platform.h"
 
-struct connection;
-struct server_state;
+typedef struct server_state server_state_t;
+typedef struct connection_handler connection_handler_t;
+typedef struct err err_t;
+typedef struct tls_uv_connection_state tls_uv_connection_state_t;
+
+struct tls_uv_connection_state_private_members {
+	server_state_t* server;
+	uv_tcp_t* handle;
+	SSL *ssl;
+	BIO *read, *write;
+	struct {
+		tls_uv_connection_state_t** prev_holder;
+		tls_uv_connection_state_t* next;
+		int in_queue;
+		size_t pending_writes_count;
+		uv_buf_t* pending_writes_buffer;
+	} pending;
+	size_t used_buffer, to_scan;
+};
+
+#define MSG_SIZE (8192 - sizeof(struct tls_uv_connection_state_private_members) - 64)
+
+
+// This struct is exactly 8KB in size, this
+// means it is two OS pages and is easy to work with
+typedef struct tls_uv_connection_state {
+	struct tls_uv_connection_state_private_members;
+	char buffer[MSG_SIZE];
+	char user_data[64]; // location for user data
+} tls_uv_connection_state_t;
+
+static_assert(offsetof(tls_uv_connection_state_t, user_data) % 64 == 0, "tls_uv_connection_state_t.user should be 64 bytes aligned");
+static_assert(sizeof(tls_uv_connection_state_t) == 8192, "tls_uv_connection_state_t should be 8KB");
 
 // commands
 
-struct header {
+typedef struct header {
 	char* key;
 	char* value;
-};
+} header_t;
 
-struct cmd {
-	struct connection* connection;
+typedef struct cmd {
+	tls_uv_connection_state_t* connection;
 	char** argv;
 	int argc;
 	struct header* headers;
@@ -24,28 +59,27 @@ struct cmd {
 	char* sequence;
 
 	char* cmd_buffer;
-};
+} cmd_t;
 
-void cmd_drop(struct cmd * cmd);
-
+void cmd_drop(cmd_t * cmd);
 
 // error handling
 
-struct err {
-	struct err* next;
+typedef struct err {
+	err_t* next;
 	char* msg;
 	size_t len;
 	int code;
 
 	const char* file, *func;
 	int line;
-};
+} err_t;
 
 void push_error_internal(const char* file, int line, const char *func, int code, const char* format, ...);
 
 #define push_error(code, format, ...) push_error_internal(__FILE__, __LINE__, __func__, code, format, ##__VA_ARGS__)
 
-typedef void(*error_callback)(struct err* e, void * u);
+typedef void(*error_callback)(err_t* e, void * u);
 
 void consume_errors(error_callback cb, void * u);
 
@@ -53,51 +87,45 @@ void print_all_errors(void);
 
 void push_ssl_errors();
 
+void push_libuv_error(int rc, const char* operation, ...);
+
 // ssl
-
-
-struct server_state_init {
-	const char* cert;
-	const char* key;
-	int ip;
-	int port;
-};
-
-struct server_state* server_state_create(struct server_state_init* options);
-
-void server_state_drop(struct server_state* s);
 
 #define THUMBPRINT_HEX_LENGTH 41 // 40 chars + null terminator
 
-int server_state_register_certificate_thumbprint(struct server_state*s, const char* thumbprint);
+typedef struct server_state_init {
+	const char* cert;
+	const char* key;
+	const char* address;
+	int port;
+	connection_handler_t* handler;
+	char* known_thumprints[THUMBPRINT_HEX_LENGTH];
+	int known_thumprints_count;
 
-struct connection_setup {
+} server_state_init_t;
 
-	void (*connection_error)(void);
+server_state_t* server_state_create(server_state_init_t* options);
 
-	void* (*connection_created)(struct connection* connection);
+void server_state_drop(server_state_t* s);
 
-	void (*connection_dropped)(struct connection* connection, 
-		void* state);
+typedef struct connection_handler {
 
-	int (*connection_recv)(struct cmd* cmd,  void* state);
-};
+	void(*failed_connection)(void);
 
+	void (*connection_error)(tls_uv_connection_state_t* connection);
 
-void server_state_register_connection_setup(struct server_state* s, struct connection_setup cb);
+	tls_uv_connection_state_t*  (*create_connection)(void);
 
-int server_state_run(struct server_state* s);
+	int (*connection_recv)(tls_uv_connection_state_t* connection, cmd_t* cmd);
+
+} connection_handler_t;
+
+int server_state_run(server_state_t* s);
 
 // network
+int connection_reply(cmd_t* c, void* buf, size_t len);
 
-
-struct connection* connection_create(struct server_state* srv, int socket);
-
-void connection_drop(struct connection* c);
-
-int connection_reply(struct cmd* c, void* buf, size_t len);
-
-int connection_reply_format(struct cmd* c, const char* format, ...);
+int connection_reply_format(cmd_t* c, const char* format, ...);
 
 
 // util

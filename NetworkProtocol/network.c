@@ -5,37 +5,14 @@
 #include "network.h"
 #include <string.h>
 #include "internal.h"
+#include <uv.h>
+#include <assert.h>
 
-void server_state_register_connection_setup(struct server_state* s, struct connection_setup cb) {
-	s->cb = cb;
+size_t size_of_tls_uv_connection_state() {
+	return sizeof(tls_uv_connection_state_t);
 }
 
-int server_state_register_certificate_thumbprint(struct server_state*s, const char* thumbprint) {
-	if (s->certs_len + 1 >= s->certs_capacity) {
-
-		struct certificate_thumbprint* buffer;
-		int new_size = s->certs_capacity < 1 ? 1 : s->certs_capacity * 2;
-
-		buffer = realloc(s->certs, new_size * sizeof(struct certificate_thumbprint));
-		if (buffer == NULL) {
-			push_error(ENOMEM, "Could not allocate memory for thumbprint");
-			return 0;
-		}
-
-		s->certs = buffer;
-		s->certs_capacity = new_size;
-	}
-
-	if (strlen(thumbprint) != THUMBPRINT_HEX_LENGTH -1 /*null terminator */) {
-		push_error(EINVAL, "Unexpected thmbuprint size");
-		return 0;
-	}
-	
-	memcpy(&s->certs[s->certs_len++], thumbprint, THUMBPRINT_HEX_LENGTH);
-	return 1;
-}
-
-static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
+static int verify_ssl_x509_certificate_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
 	// we want to give good errors, so we acccept all certs
 	// and validate them manually
@@ -56,48 +33,13 @@ int configure_context(SSL_CTX *ctx, const char* cert, const char* key)
 		return 0;
 	}
 
-	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, verify_callback);
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, verify_ssl_x509_certificate_callback);
 
 	return 1;
 }
 
-
-int create_server_socket(int ip, int port)
-{
-	int s;
-	int rc;
-	struct sockaddr_in addr;
-
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = htonl(ip);
-
-	s = socket(AF_INET, SOCK_STREAM, 0);
-	if (s < 0) {
-		push_error(ENETUNREACH, "Unable to create socket for listening on port: %i", port);
-		return -1;
-	}
-
-	rc = bind(s, (struct sockaddr*)&addr, sizeof(addr));
-	if (rc != 0) {
-		close(s);
-		push_error(rc, "Unable to bind socket on port: %i, error: %i", port, rc);
-		return -1;
-	}
-
-	rc = listen(s, 2);
-
-	if (rc != 0) {
-		close(s);
-		push_error(rc, "Unable to listen to socket on port: %i, error: %i", port, rc);
-		return -1;
-	}
-
-	return s;
-}
-
-struct server_state* server_state_create(struct server_state_init* options) {
-	struct server_state* state;
+server_state_t* server_state_create(server_state_init_t* options) {
+	server_state_t* state;
 	const SSL_METHOD *method;
 	static int first_time_init_done;
 
@@ -151,16 +93,13 @@ struct server_state* server_state_create(struct server_state_init* options) {
 }
 
 
-void server_state_drop(struct server_state* s) {
-	if(s->certs != NULL)
-		free(s->certs);
-
+void server_state_drop(server_state_t* s) {
 	SSL_CTX_free(s->ctx);
 
 	free(s);	
 }
 
-int validate_connection_certificate(struct connection * c)
+int validate_connection_certificate(tls_uv_connection_state_t* c)
 {
 	int free_err = 0;
 	ASN1_TIME* time;
@@ -207,9 +146,9 @@ int validate_connection_certificate(struct connection * c)
 			goto error;
 		}
 	}
-	for (size_t i = 0; i < c->server->certs_len; i++)
+	for (int i = 0; i < c->server->options.known_thumprints_count; i++)
 	{
-		if (strncasecmp(digest_hex, c->server->certs[i].thumbprint, THUMBPRINT_HEX_LENGTH) == 0)
+		if (strncasecmp(digest_hex, c->server->options.known_thumprints[i], THUMBPRINT_HEX_LENGTH) == 0)
 		{
 			rc = 1;
 			goto done;
@@ -234,74 +173,7 @@ done:
 	return rc;
 }
 
-struct connection* connection_create(struct server_state* srv, int socket) {
-	int rc;
-	struct connection* c = calloc(1, sizeof(struct connection));
-	if (c == NULL)
-	{
-		push_error(ENOMEM, "Unable to allocate memory for connection");
-		goto error_cleanup;
-	}
-	c->buffer = malloc(MSG_SIZE);
-	if (c->buffer == NULL) {
-		push_error(ENOMEM, "Unable to allocate memory for connection's buffer");
-		goto error_cleanup;
-	}
-	c->server = srv;
-	c->ssl = SSL_new(srv->ctx);
-	if (c->ssl == NULL)
-	{
-		push_ssl_errors();
-		push_error(ENOMEM, "Failed to create new SSL struct");
-		goto error_cleanup;
-	}
-	c->client_fd = socket;
-	if (!SSL_set_fd(c->ssl, socket))
-	{
-		push_ssl_errors();
-		push_error(EBADF, "Failed to associate the new SSL context with the provided socket");
-		goto error_cleanup;
-	}
-
-	rc = SSL_accept(c->ssl);
-	if (rc <= 0) {
-		push_ssl_errors();
-		push_error(ENETRESET, "Could not establish TLS connection to client: %i", SSL_get_error(c->ssl, rc));
-		goto error_cleanup;
-	}
-
-	// now need to validate the certificate...
-	if(!validate_connection_certificate(c))
-		goto error_cleanup;
-
-	if (!connection_write(c, "OK\r\n", 4))
-		goto error_cleanup;
-
-	return c;
-
-error_cleanup:
-	if (c != NULL) {
-		if (c->ssl != NULL) {
-			SSL_free(c->ssl);
-			c->ssl = NULL;
-		}
-		if (c->buffer != NULL)
-			free(c->buffer);
-		free(c);
-	}
-	return NULL;
-}
-
-
-
-void connection_drop(struct connection* c) {
-	SSL_free(c->ssl);
-	close(c->client_fd);
-	free(c->buffer);
-	free(c);
-}
-
-int connection_write(struct connection* c, void* buf, size_t len) {
+int connection_write(tls_uv_connection_state_t* c, void* buf, size_t len) {
 	int rc = SSL_write(c->ssl, buf, len);
 	if (rc <= 0) {
 		push_error(ENETRESET, "Unable to write message to connection: %i", SSL_get_error(c->ssl, rc));
@@ -311,7 +183,7 @@ int connection_write(struct connection* c, void* buf, size_t len) {
 	return 1;
 }
 
-int connection_write_format(struct connection* c, const char* format, ...) {
+int connection_write_format(tls_uv_connection_state_t* c, const char* format, ...) {
 	va_list ap;
 	int rc;
 	va_start(ap, format);
@@ -329,93 +201,346 @@ int connection_write_format(struct connection* c, const char* format, ...) {
 	return rc;
 }
 
-int connection_read(struct connection *c, void* buf, int len) {
-
-	int rc = SSL_read(c->ssl, buf, len);
-	if (rc <= 0) {
-		push_error(ENETRESET, "Unable to read message from connection: %i", SSL_get_error(c->ssl, rc));
-		return 0;
+void remove_connection_from_queue(tls_uv_connection_state_t* cur) {
+	if (cur->pending.pending_writes_buffer != NULL) {
+		free(cur->pending.pending_writes_buffer);
 	}
-	return rc;
+	if (cur->pending.prev_holder != NULL) {
+		*cur->pending.prev_holder = cur->pending.next;
+	}
+
+	memset(&cur->pending, 0, sizeof(cur->pending));
 }
 
-int server_state_run(struct server_state* s) {
-	int rc;
-	int accept_more_connections = 1;
-	int socket = create_server_socket(s->options.ip, s->options.port);
-	if (socket == -1) {
-		push_error(EINVAL, "Unable to create socket");
-		return 0;
+void abort_connection_on_error(tls_uv_connection_state_t* state) {
+	uv_close((uv_handle_t*)state->handle, NULL);
+	SSL_free(state->ssl);
+	remove_connection_from_queue(state);
+	free(state);
+}
+
+void complete_write(uv_write_t* r, int status) {
+	tls_uv_connection_state_t* state = r->data;
+	free(r->write_buffer.base);
+	free(r);
+
+	if (status < 0) {
+		push_error(status, "Failed to write to connection");
+		state->server->options.handler->connection_error(state);
+		abort_connection_on_error(state);
 	}
+}
 
-	while (accept_more_connections) {
-		struct sockaddr_in addr;
-		struct connection* con;
-		unsigned int len = sizeof(addr);
-		void* connection_state;
 
-		int client = accept(socket, (struct sockaddr*)&addr, &len);
-		if (client == INVALID_SOCKET) {
-			push_error(ENETRESET, "Unable to accept connection, error: %i",
-				GetLastError());
-			// failure to accept impacts everything, we'll abort
-			goto handle_error;
+int flush_ssl_buffer(tls_uv_connection_state_t* cur) {
+	int rc = BIO_pending(cur->write);
+	if (rc > 0) {
+		void* mem = malloc(rc);
+		if (mem == NULL) {
+			push_error(ENOMEM, "Unable to allocate memory to flush SSL");
+			return 0;
 		}
-
-		con = connection_create(s, client);
-
-		if (con == NULL)
-			goto handle_connection_error;
-
-		connection_state = s->cb.connection_created == NULL ? 
-			NULL :
-			s->cb.connection_created(con);
-
-		while (1)
+		uv_buf_t buf = uv_buf_init(mem, rc);
+		rc = BIO_read(cur->write, buf.base, rc);
+		if (rc <= 0)
 		{
-			struct cmd* cmd = read_message(con);
-			if (cmd == NULL) {
-				break;
-			}
+			free(mem);
+			return 1;// nothing to read, that is fine
+		}
+		uv_write_t* r = calloc(1, sizeof(uv_write_t));
+		if (r == NULL) {
+			push_error(ENOMEM, "Unable to allocate memory to flush SSL");
+			free(r);
+			return 0;
+		}
+		r->data = cur;
+		rc = uv_write(r, (uv_stream_t*)cur->handle, &buf, 1, complete_write);
+		if (rc < 0) {
+			push_libuv_error(rc, "uv_write");
+			free(r);
+			free(mem);
+			return 0;
+		}
+	}
+	return 1;
+}
 
-			if (strcasecmp("quit", cmd->argv[0]) == 0)
-			{
-				cmd_drop(cmd);
-				accept_more_connections = 0;
-				break;
-			}
 
-			rc = s->cb.connection_recv(cmd, connection_state);
+void try_flush_ssl_state(uv_handle_t * handle) {
+	server_state_t* server_state = handle->data;
+	tls_uv_connection_state_t** head = &server_state->pending_writes;
+	int rc;
+	while (*head != NULL) {
+		tls_uv_connection_state_t* cur = *head;
 
-			cmd_drop(cmd);
+		rc = flush_ssl_buffer(cur);
 
-			if (rc == 0) {
-				
-				break;
-			}
+		if (rc == 0) {
+			push_error(rc, "Failed to flush SSL buffer");
+			server_state->options.handler->connection_error(cur);
+			abort_connection_on_error(cur);
+			continue;
 		}
 
-	handle_connection_error:
-		if (s->cb.connection_error != NULL)
-			s->cb.connection_error();
-		consume_errors(NULL, NULL);
-
-		if (con != NULL) {
-			connection_drop(con);
-		}
-		else { // can only happen if we failed to create connection, but already accepted it
-			close(client);
+		if (cur->pending.pending_writes_count == 0) {
+			remove_connection_from_queue(cur);
+			continue;
 		}
 
-		// now go back and accept another connection
+		// here we have pending writes to deal with, so we'll try stuffing them
+		// into the SSL buffer
+		int used = 0;
+		for (size_t i = 0; i < cur->pending.pending_writes_count; i++)
+		{
+			int rc = SSL_write(cur->ssl,
+				cur->pending.pending_writes_buffer[i].base,
+				cur->pending.pending_writes_buffer[i].len);
+			if (rc > 0) {
+				used++;
+				continue;
+			}
+			rc = SSL_get_error(cur->ssl, rc);
+			if (rc == SSL_ERROR_WANT_WRITE) {
+				flush_ssl_buffer(cur);
+				i--;// retry
+				continue;
+			}
+			if (rc != SSL_ERROR_WANT_READ) {
+				push_ssl_errors();
+				server_state->options.handler->connection_error(cur);
+				abort_connection_on_error(cur);
+				cur->pending.in_queue = 0;
+				break;
+			}
+			// we are waiting for reads from the network
+			// we can't remove this instance, so we play
+			// with the pointer and start the scan/remove 
+			// from this position
+			head = &cur->pending.next;
+			break;
+		}
+		rc = flush_ssl_buffer(cur);
+		if (rc == 0) {
+			push_error(rc, "Failed to flush SSL buffer");
+			server_state->options.handler->connection_error(cur);
+			abort_connection_on_error(cur);
+			continue;
+		}
+		if (used == cur->pending.pending_writes_count) {
+			remove_connection_from_queue(cur);
+		}
+		else {
+			cur->pending.pending_writes_count -= used;
+			memmove(cur->pending.pending_writes_buffer,
+				cur->pending.pending_writes_buffer + sizeof(uv_buf_t)*used,
+				sizeof(uv_buf_t) * cur->pending.pending_writes_count);
+		}
+	}
+}
+
+void prepare_if_need_to_flush_ssl_state(uv_prepare_t * handle) {
+	try_flush_ssl_state((uv_handle_t*)handle);
+}
+void check_if_need_to_flush_ssl_state(uv_check_t * handle) {
+	try_flush_ssl_state((uv_handle_t*)handle);
+}
+
+void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+	buf->base = (char*)malloc(suggested_size);
+	buf->len = suggested_size;
+}
+
+void maybe_flush_ssl(tls_uv_connection_state_t* state) {
+	if (state->pending.in_queue)
+		return;
+	if (BIO_pending(state->write) == 0 && state->pending.pending_writes_count > 0)
+		return;
+	state->pending.next = state->server->pending_writes;
+	if (state->pending.next != NULL) {
+		state->pending.next->pending.prev_holder = &state->pending.next;
+	}
+	state->pending.prev_holder = &state->server->pending_writes;
+	state->pending.in_queue = 1;
+
+	state->server->pending_writes = state;
+}
+
+void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
+	tls_uv_connection_state_t* state = client->data;
+
+	int rc = BIO_write(state->read, buf->base, nread);
+	assert(rc == nread);
+	while (1)
+	{
+		int rc = SSL_read(state->ssl, buf->base, buf->len);
+		if (rc <= 0) {
+			rc = SSL_get_error(state->ssl, rc);
+			if (rc != SSL_ERROR_WANT_READ) {
+				push_ssl_errors();
+				state->server->options.handler->connection_error(state);
+				abort_connection_on_error(state);
+				break;
+			}
+			maybe_flush_ssl(state);
+			// need to read more, we'll let libuv handle this
+			break;
+		}
+		if (read_message(state, buf->base, rc) == 0) {
+			// handler asked to close the socket
+			abort_connection_on_error(state);
+			break;
+		}
 	}
 
-handle_error:
+	free(buf->base);
+}
 
-	if (socket != -1)
-		close(socket);
+void on_new_connection(uv_stream_t *server, int status) {
+	uv_tcp_t *client = NULL;
+	tls_uv_connection_state_t* state = NULL;
+	server_state_t* server_state = server->data;
+	if (status < 0) {
+		push_libuv_error(status, "Unable to accept new connection");
+		goto error_handler;
+	}
 
-	return !accept_more_connections;
+	client = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
+	if (client == NULL) {
+		push_error(ENOMEM, "Unable to allocate memory for new connection");
+		goto error_handler;
+	}
+	int rc = uv_tcp_init(server_state->loop, client);
+	if (rc < 0) {
+		push_libuv_error(rc, "uv_tcp_init");
+		goto error_handler;
+	}
+	status = uv_accept(server, (uv_stream_t*)client);
+	if (status != 0) {
+		push_libuv_error(rc, "uv_tcp_init");
+		goto error_handler;
+	}
+	state = server_state->options.handler->create_connection();
+	if (state == NULL) {
+		push_error(ENOMEM, "create_connection callback returned NULL");
+		goto error_handler;
+	}
+	state->ssl = SSL_new(server_state->ctx);
+	if (state->ssl == NULL) {
+		push_error(ENOMEM, "Unable to allocate SSL for connection");
+		goto error_handler;
+	}
+	SSL_set_accept_state(state->ssl);
+	state->server = server_state;
+	state->handle = client;
+	state->read = BIO_new(BIO_s_mem());
+	state->write = BIO_new(BIO_s_mem());
+	if (state->read == NULL || state->write == NULL) {
+		push_error(ENOMEM, "Unable to allocate I/O for connection");
+		goto error_handler;
+	}
+
+	BIO_set_nbio(state->read, 1);
+	BIO_set_nbio(state->write, 1);
+	SSL_set_bio(state->ssl, state->read, state->write);
+
+	client->data = state;
+
+	rc = uv_read_start((uv_stream_t*)client, alloc_buffer, handle_read);
+	if (rc < 0) {
+		push_libuv_error(rc, "uv_read_start");
+		goto error_handler;
+	}
+
+error_handler:
+
+	if (client != NULL) {
+		uv_close((uv_handle_t*)client, NULL);
+		free(client);
+	}
+	if (state != NULL) {
+		if (state->ssl != NULL) {
+			if (SSL_get_rbio(state->ssl) != NULL)
+				state->read = NULL;
+			if (SSL_get_wbio(state->ssl) != NULL)
+				state->write = NULL;
+			SSL_free(state->ssl);
+		}
+		if (state->read != NULL) {
+			BIO_free(state->read);
+		}
+		if (state->write != NULL) {
+			BIO_free(state->write);
+		}
+	}
+	server_state->options.handler->failed_connection();
+}
+
+int server_state_run(server_state_t* s) {
+	
+	s->loop = uv_default_loop();
+	if (s->loop == NULL) {
+		push_error(ENOMEM, "Unable to allocate a uv loop");
+		goto error_cleanup;
+	}
+	
+	uv_tcp_t server;
+	int rc = uv_tcp_init(s->loop, &server);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_tcp_init");
+		goto error_cleanup;
+	}
+	server.data = s;
+	struct sockaddr_in addr;
+	rc = uv_ip4_addr(s->options.address, s->options.port, &addr);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_ip4_addr(%s, %i, addr)", s->options.address, s->options.port);
+		goto error_cleanup;
+	}
+
+	rc = uv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_tcp_bind(%s : %i)", s->options.address, s->options.port);
+		goto error_cleanup;
+	}
+	rc = uv_listen((uv_stream_t*)&server, 128, on_new_connection);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_listen(%s : %i)", s->options.address, s->options.port);
+		goto error_cleanup;
+	}
+	uv_prepare_t before_io;
+	before_io.data = s;
+	rc = uv_prepare_init(s->loop, &before_io);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_prepare_init");
+		goto error_cleanup;
+	}
+	rc = uv_prepare_start(&before_io, prepare_if_need_to_flush_ssl_state);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_prepare_start");
+		goto error_cleanup;
+	}
+	uv_check_t after_io;
+	after_io.data = s;
+	rc = uv_check_init(s->loop, &after_io);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_check_init");
+		goto error_cleanup;
+	}
+	rc = uv_check_start(&after_io, check_if_need_to_flush_ssl_state);
+	if (rc != 0) {
+		push_libuv_error(rc, "uv_check_start");
+		goto error_cleanup;
+	}
+
+	rc = uv_run(s->loop, UV_RUN_DEFAULT);
+	
+error_cleanup:
+	
+	if (s->loop != NULL) {
+		uv_loop_close(s->loop);
+	}
+
+	return rc;
 }
 
 
@@ -426,4 +551,24 @@ int push_single_ssl_error(const char * str, size_t len, void * _) {
 
 void push_ssl_errors() {
 	ERR_print_errors_cb(push_single_ssl_error, NULL);
+}
+
+void push_libuv_error(int rc, const char* operation, ...) {
+	char tmp[256];
+	uv_strerror_r(rc, tmp, 256);
+
+	va_list ap;
+	va_start(ap, operation);
+	char* msg;
+	if (vasprintf(&msg, operation, ap) != -1) {
+		operation = msg;
+	}
+	else {
+		msg = NULL;
+	}
+	va_end(ap);
+
+	push_error(rc, "libuv err: %s failed with %i - %s", msg, rc, tmp);
+	if(msg != NULL)
+		free(msg);
 }
