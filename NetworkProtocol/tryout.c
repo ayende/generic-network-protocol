@@ -24,7 +24,7 @@ void on_connection_dropped(tls_uv_connection_state_t* connection) {
 int on_connection_recv(tls_uv_connection_state_t* connection, cmd_t* cmd) {
 	int rc;
 	if (strcasecmp("GET", cmd->argv[0]) == 0 && cmd->argc > 1) {
-		rc = connection_reply_format(cmd, cmd->argv[1]);
+		rc = connection_reply_format(cmd, "%s", cmd->argv[1]);
 	}
 	else {
 		rc = connection_reply_format(cmd, "Unknown command: %s", cmd->argv[0]);

@@ -138,7 +138,7 @@ int read_message(tls_uv_connection_state_t* c, void* buffer, int nread) {
 		int to_copy = MSG_SIZE - c->used_buffer;
 		to_copy = to_copy < nread ? to_copy : nread;
 		nread -= to_copy;
-		memcpy(c->buffer, buffer, to_copy);
+		memcpy(c->buffer + c->used_buffer, buffer, to_copy);
 		c->used_buffer += to_copy;
 		
 		// first, need to check if we already

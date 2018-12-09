@@ -14,6 +14,9 @@ typedef struct connection_handler connection_handler_t;
 typedef struct err err_t;
 typedef struct tls_uv_connection_state tls_uv_connection_state_t;
 
+#define CONNECTION_STATUS_INIT_DONE 0x1
+#define CONNECTION_STATUS_WRITE_AND_ABORT 0x2
+
 struct tls_uv_connection_state_private_members {
 	server_state_t* server;
 	uv_tcp_t* handle;
@@ -27,6 +30,7 @@ struct tls_uv_connection_state_private_members {
 		uv_buf_t* pending_writes_buffer;
 	} pending;
 	size_t used_buffer, to_scan;
+	int flags;
 };
 
 #define MSG_SIZE (8192 - sizeof(struct tls_uv_connection_state_private_members) - 64)

@@ -8,9 +8,7 @@
 #include <uv.h>
 #include <assert.h>
 
-size_t size_of_tls_uv_connection_state() {
-	return sizeof(tls_uv_connection_state_t);
-}
+void maybe_flush_ssl(tls_uv_connection_state_t* state);
 
 static int verify_ssl_x509_certificate_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
@@ -179,7 +177,7 @@ int connection_write(tls_uv_connection_state_t* c, void* buf, size_t len) {
 		push_error(ENETRESET, "Unable to write message to connection: %i", SSL_get_error(c->ssl, rc));
 		return 0;
 	}
-
+	maybe_flush_ssl(c);
 	return 1;
 }
 
@@ -226,9 +224,19 @@ void complete_write(uv_write_t* r, int status) {
 
 	if (status < 0) {
 		push_error(status, "Failed to write to connection");
-		state->server->options.handler->connection_error(state);
-		abort_connection_on_error(state);
 	}
+	else if (state->flags & CONNECTION_STATUS_WRITE_AND_ABORT) {
+		push_error(status, "Done writing buffered error message, now aborting connection");
+	}
+	else {
+		return;
+	}
+
+
+	state->server->options.handler->connection_error(state);
+	abort_connection_on_error(state);
+
+
 }
 
 
@@ -367,6 +375,13 @@ void maybe_flush_ssl(tls_uv_connection_state_t* state) {
 
 void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 	tls_uv_connection_state_t* state = client->data;
+	if (nread <= 0) {
+		push_libuv_error(nread, "Unable to read");
+		state->server->options.handler->connection_error(state);
+		abort_connection_on_error(state);
+		return;
+	}
+
 
 	int rc = BIO_write(state->read, buf->base, nread);
 	assert(rc == nread);
@@ -381,9 +396,27 @@ void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 				abort_connection_on_error(state);
 				break;
 			}
+
+			if ((state->flags & CONNECTION_STATUS_INIT_DONE) == 0){
+				if (SSL_is_init_finished(state->ssl)) {
+					state->flags |= CONNECTION_STATUS_INIT_DONE;
+					if (validate_connection_certificate(state) == 0) {
+						state->flags |= CONNECTION_STATUS_WRITE_AND_ABORT;
+						break;
+					}
+					connection_write(state, "OK\r\n", 4);
+				}
+			}
+
 			maybe_flush_ssl(state);
 			// need to read more, we'll let libuv handle this
 			break;
+		}
+		if (state->flags & CONNECTION_STATUS_WRITE_AND_ABORT) {
+			// we won't accept anything from this kind of connection
+			// just read it out of the network and let's give the write
+			// a chance to kill it
+			continue;
 		}
 		if (read_message(state, buf->base, rc) == 0) {
 			// handler asked to close the socket
@@ -424,6 +457,7 @@ void on_new_connection(uv_stream_t *server, int status) {
 		push_error(ENOMEM, "create_connection callback returned NULL");
 		goto error_handler;
 	}
+	memset(state, 0, sizeof(struct tls_uv_connection_state_private_members));
 	state->ssl = SSL_new(server_state->ctx);
 	if (state->ssl == NULL) {
 		push_error(ENOMEM, "Unable to allocate SSL for connection");
@@ -450,6 +484,8 @@ void on_new_connection(uv_stream_t *server, int status) {
 		push_libuv_error(rc, "uv_read_start");
 		goto error_handler;
 	}
+
+	return;
 
 error_handler:
 
