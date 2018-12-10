@@ -26,8 +26,6 @@ namespace Client
                 cert.Add(new X509Certificate2(@"C:\Users\ayende\source\repos\ConsoleApplication4\Client\example.p12"));
                 await ssl.AuthenticateAsClientAsync("example.com", cert, checkCertificateRevocation: false);
 
-                Console.WriteLine("Connected");
-
                 var writer = new StreamWriter(ssl);
                 var reader = new StreamReader(ssl);
 

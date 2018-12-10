@@ -29,6 +29,7 @@ int on_connection_recv(tls_uv_connection_state_t* connection, cmd_t* cmd) {
 	else {
 		rc = connection_reply_format(cmd, "Unknown command: %s", cmd->argv[0]);
 	}
+	cmd_drop(cmd);
 	return rc;
 }
 
@@ -54,8 +55,11 @@ int main(int argc, char **argv)
 		"0.0.0.0", 
 		4433,
 		&handler,
-		{ "1776821DB1002B0E2A9B4EE3D5EE14133D367009" , "AE535D83572189D3EDFD1568DC76275BE33B07F5" },
-		2
+		{  // allowed certs
+			"1776821DB1002B0E2A9B4EE3D5EE14133D367009" , 
+			"AE535D83572189D3EDFD1568DC76275BE33B07F5" 
+		},
+		2 // number of allowed certs
 	};
 	srv_state = server_state_create(&options);
 

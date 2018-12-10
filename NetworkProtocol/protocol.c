@@ -5,7 +5,17 @@ int connection_reply(struct cmd* c, void* buf, size_t len) {
 	char* msg;
 	int rc;
 	if (c->sequence == NULL) {
-		push_error(EINVAL, "Cannot reply to a message that has no Sequence header: %s", c->argv[0]);
+		char* format = "Cannot reply to a message that has no Sequence header: %s";
+		int len = asprintf(&msg, "Cannot reply to a message that has no Sequence header: %s", c->argv[0]);
+		if (len == -1) {
+			msg = format;
+			len = strlen(format);
+		}
+		push_error(EINVAL, msg);
+		connection_write(c->connection ,msg, len);
+		if (msg != format) {
+			free(msg);
+		}
 		return 0;
 	}
 

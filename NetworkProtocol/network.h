@@ -33,16 +33,20 @@ struct tls_uv_connection_state_private_members {
 	int flags;
 };
 
-#define MSG_SIZE (8192 - sizeof(struct tls_uv_connection_state_private_members) - 64)
+#define RESERVED_SIZE (64 - sizeof(struct tls_uv_connection_state_private_members))
+#define MSG_SIZE (8192 - sizeof(struct tls_uv_connection_state_private_members) - 64 - RESERVED_SIZE)
 
 
 // This struct is exactly 8KB in size, this
 // means it is two OS pages and is easy to work with
 typedef struct tls_uv_connection_state {
 	struct tls_uv_connection_state_private_members;
+	char reserved[RESERVED_SIZE]; 
+	char user_data[64]; // location for user data, 64 bytes aligned, 64 in size
 	char buffer[MSG_SIZE];
-	char user_data[64]; // location for user data
 } tls_uv_connection_state_t;
+
+// char(*__kaboom)[MSG_SIZE] = 1;
 
 static_assert(offsetof(tls_uv_connection_state_t, user_data) % 64 == 0, "tls_uv_connection_state_t.user should be 64 bytes aligned");
 static_assert(sizeof(tls_uv_connection_state_t) == 8192, "tls_uv_connection_state_t should be 8KB");

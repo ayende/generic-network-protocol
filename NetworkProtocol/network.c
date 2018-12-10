@@ -8,7 +8,7 @@
 #include <uv.h>
 #include <assert.h>
 
-void maybe_flush_ssl(tls_uv_connection_state_t* state);
+int maybe_flush_ssl(tls_uv_connection_state_t* state);
 
 static int verify_ssl_x509_certificate_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
@@ -358,11 +358,11 @@ void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
 	buf->len = suggested_size;
 }
 
-void maybe_flush_ssl(tls_uv_connection_state_t* state) {
+int maybe_flush_ssl(tls_uv_connection_state_t* state) {
 	if (state->pending.in_queue)
-		return;
-	if (BIO_pending(state->write) == 0 && state->pending.pending_writes_count > 0)
-		return;
+		return 1;
+	if (BIO_pending(state->write) == 0 && state->pending.pending_writes_count == 0)
+		return 0;
 	state->pending.next = state->server->pending_writes;
 	if (state->pending.next != NULL) {
 		state->pending.next->pending.prev_holder = &state->pending.next;
@@ -371,6 +371,23 @@ void maybe_flush_ssl(tls_uv_connection_state_t* state) {
 	state->pending.in_queue = 1;
 
 	state->server->pending_writes = state;
+	return 1;
+}
+
+int ensure_connection_intialized(tls_uv_connection_state_t* state) {
+	if (state->flags & CONNECTION_STATUS_INIT_DONE)
+		return 1;
+
+	if (SSL_is_init_finished(state->ssl)) {
+		state->flags |= CONNECTION_STATUS_INIT_DONE;
+		if (validate_connection_certificate(state) == 0) {
+			state->flags |= CONNECTION_STATUS_WRITE_AND_ABORT;
+			return 0;
+		}
+		return connection_write(state, "OK\r\n", 4);
+	}
+
+	return 1;
 }
 
 void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
@@ -397,21 +414,17 @@ void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 				break;
 			}
 
-			if ((state->flags & CONNECTION_STATUS_INIT_DONE) == 0){
-				if (SSL_is_init_finished(state->ssl)) {
-					state->flags |= CONNECTION_STATUS_INIT_DONE;
-					if (validate_connection_certificate(state) == 0) {
-						state->flags |= CONNECTION_STATUS_WRITE_AND_ABORT;
-						break;
-					}
-					connection_write(state, "OK\r\n", 4);
-				}
-			}
-
 			maybe_flush_ssl(state);
+			ensure_connection_intialized(state);
 			// need to read more, we'll let libuv handle this
 			break;
 		}
+
+		// should be rare: can only happen if we go for 0rtt or something like that
+		// and we do the handshake and have real data in one network roundtrip
+		if (ensure_connection_intialized(state) == 0)
+			break; 
+
 		if (state->flags & CONNECTION_STATUS_WRITE_AND_ABORT) {
 			// we won't accept anything from this kind of connection
 			// just read it out of the network and let's give the write
@@ -420,6 +433,10 @@ void handle_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 		}
 		if (read_message(state, buf->base, rc) == 0) {
 			// handler asked to close the socket
+			if (maybe_flush_ssl(state)) {
+				state->flags |= CONNECTION_STATUS_WRITE_AND_ABORT;
+				break;
+			}
 			abort_connection_on_error(state);
 			break;
 		}
