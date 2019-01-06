@@ -13,7 +13,11 @@ use tokio::net::tcp::TcpStream;
 use tokio::net::TcpListener;
 use tokio_io::{AsyncRead};
 use tokio_openssl::SslAcceptorExt;
-
+use tokio_openssl::SslStream;
+use tokio::io::ReadHalf;
+use tokio::io::WriteHalf;
+use futures::sync::mpsc::Sender;
+use futures::sync::mpsc::Receiver;
 use self::err::ConnectionError;
 use self::cmd::CommandCodec;
 
@@ -86,15 +90,45 @@ impl Server {
             Ok(None) => None,
         };
 
-        let (reader, mut writer) = stream.split();
 
         if let Some((msg, e)) = auth_result {
-            await!(write_all(writer, msg.into_bytes()))?;
+            await!(write_all(stream, msg.into_bytes()))?;
             return Err(e);
         }
 
-        writer = await!(write_all(writer, "OK\r\n".to_string()))?.0;
+        let (mut sender, receiver) = futures::sync::mpsc::channel(3);
+        let (reader, writer) = stream.split();
         
+        sender = await!(sender.send("OK".to_string()))?;
+
+        tokio::spawn(Server::process_commands(server, reader, sender).map_err(|_|()));
+        tokio::spawn(Server::send_results(writer, receiver).map_err(|_|()));
+
+        Ok(())
+    }
+
+
+    #[async]
+    fn send_results(
+        mut writer: WriteHalf<SslStream<TcpStream>>,
+        receiver: Receiver<String>
+    ) -> std::result::Result<(), ConnectionError> {
+        #[async]
+        for msg in receiver {
+
+            writer = await!(write_all(writer, msg))?.0;
+            writer = await!(write_all(writer, b"\r\n\r\n"))?.0;
+        }
+        Ok(())
+    }
+
+    #[async]
+    fn process_commands(
+        server: Arc<Server>,
+        reader: ReadHalf<SslStream<TcpStream>>,
+        mut sender: Sender<String>
+    ) -> std::result::Result<(), ConnectionError> {
+
         let cmds = FramedRead::new(reader, CommandCodec::new());
 
         #[async]
@@ -103,18 +137,17 @@ impl Server {
                 .map(|h| h.clone());
             match cmd_to_run {
                 None => {
-                    await!(write_all(writer, format!("ERR Uknown command {}", cmd.args[0])))?;
+                    sender = await!(sender.send(format!("ERR Uknown command {}", cmd.args[0])))?;
                     return Err(ConnectionError::InvalidCommand{cmd: cmd.args[0].clone()});
                 },
                 Some(f) =>{
                     match f(cmd){
                         Err(e) => {
-                             await!(write_all(writer, e.to_string()))?;
+                             sender = await!(sender.send(e.to_string()))?;
                              return Err(e);
                         },
                         Ok(v) => {
-                             writer = await!(write_all(writer, v))?.0;
-                             writer = await!(write_all(writer, b"\r\n\r\n"))?.0;
+                            sender = await!(sender.send(v))?;
                         }
                     }
                 }
@@ -123,6 +156,7 @@ impl Server {
 
         Ok(())
     }
+    
 
 
     fn authenticate_certificate(

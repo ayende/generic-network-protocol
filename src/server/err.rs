@@ -14,7 +14,9 @@ custom_error! {
     ClientCertNotYetValid{date: String} = "The client certificate is not yet valid: {date}",
     UnfamiliarCertiicateCert = "The client certificate is not known to the server",
     InvalidCertiicateCert = "Failed to authenticate a client certificate (invalid)",
-    InvalidCommand{cmd: String} = "Invalid command {cmd}"
+    InvalidCommand{cmd: String} = "Invalid command {cmd}",
+    WriteError{source: futures::sync::mpsc::SendError<std::string::String>} = "Unable to send message: {source}",
+    ImpossibleError = "This shouldn't happen"
 }
 
 impl ConnectionError {
@@ -22,5 +24,12 @@ impl ConnectionError {
         ConnectionError::Parse {
             origin: origin.to_string(),
         }
+    }
+}
+
+
+impl std::convert::From<()> for ConnectionError {
+    fn from(_ : ()) -> ConnectionError {
+        ConnectionError::ImpossibleError
     }
 }

@@ -1,4 +1,5 @@
 #![feature(generators)]
+#![feature(proc_macro_hygiene)]
 
 extern crate bytes;
 extern crate custom_error;
