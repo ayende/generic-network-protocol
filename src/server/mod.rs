@@ -21,7 +21,7 @@ use futures::sync::mpsc::Receiver;
 use self::err::ConnectionError;
 use self::cmd::CommandCodec;
 
-type Handler = fn(self::cmd::Cmd) -> Result<String, ConnectionError>;
+type Handler = fn(self::cmd::Cmd, sender: Sender<String>) -> Result<(), ConnectionError>;
 
 pub struct Server {
     tls: openssl::ssl::SslAcceptor,
@@ -56,8 +56,9 @@ impl Server {
         Ok(Arc::new(server))
     }
 
-    pub fn handle(&mut self, name: String, handler: Handler) {
-        self.cmd_handlers.insert(name, handler);
+    pub fn handle(&mut self, name: &str, handler: Handler) -> &mut Server {
+        self.cmd_handlers.insert(name.to_string(), handler);
+        self
     }
 
     #[async]
@@ -115,12 +116,12 @@ impl Server {
     ) -> std::result::Result<(), ConnectionError> {
         #[async]
         for msg in receiver {
-
             writer = await!(write_all(writer, msg))?.0;
             writer = await!(write_all(writer, b"\r\n\r\n"))?.0;
         }
         Ok(())
     }
+
 
     #[async]
     fn process_commands(
@@ -140,15 +141,13 @@ impl Server {
                     sender = await!(sender.send(format!("ERR Uknown command {}", cmd.args[0])))?;
                     return Err(ConnectionError::InvalidCommand{cmd: cmd.args[0].clone()});
                 },
-                Some(f) =>{
-                    match f(cmd){
+                Some(f) => {
+                    match f(cmd, sender.clone()) {
                         Err(e) => {
                              sender = await!(sender.send(e.to_string()))?;
                              return Err(e);
                         },
-                        Ok(v) => {
-                            sender = await!(sender.send(v))?;
-                        }
+                        Ok(_) => ()
                     }
                 }
             }

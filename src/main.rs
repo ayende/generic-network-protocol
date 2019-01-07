@@ -17,15 +17,68 @@ extern crate tokio_io;
 #[macro_use]
 extern crate lazy_static;
 use tokio::net::TcpListener;
-use futures::prelude::*;
 use server::err::ConnectionError;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::timer::Delay;
+use futures::sync::mpsc::Sender;
+use futures::prelude::await;
+use futures::Sink;
+use futures::prelude::*;
+use std::time::Instant;
 
 mod server;
 
-fn echo(cmd: server::cmd::Cmd) -> std::result::Result<String, ConnectionError> {
+fn echo(cmd: server::cmd::Cmd, sender : Sender<String>) -> std::result::Result<(), ConnectionError> {
 
-    Ok(cmd.args[1].clone())
+    tokio::spawn(sender.send(cmd.args[1].clone()).map_err(|_|()).map(|_|()));
+
+    Ok(())
+}
+
+
+fn remind(cmd: server::cmd::Cmd, sender : Sender<String>) -> std::result::Result<(), ConnectionError> {
+
+    static COUNTER : std::sync::atomic::AtomicUsize = std::sync::atomic::ATOMIC_USIZE_INIT;
+    // remdind <sec> msg
+
+    #[async]
+    fn delayed_send(delay: u64, msg: String, sender : Sender<String>) -> std::result::Result<(), ConnectionError> {
+
+        await!(Delay::new(Instant::now() +Duration::from_secs(delay)))?;
+
+        await!(sender.send(msg))?;
+
+        Ok(())
+    }
+
+
+    let secs : u64  = match cmd.args.get(1){
+        None => return Err(ConnectionError::BadDataArgs{
+            msg: "'remind' requires a <secs> argument".to_string()
+        }),
+        Some(str) => match str.parse::<u64>(){
+            Err(e) => return Err(ConnectionError::BadDataArgs{
+                msg: "'remind' requires a <secs> argument to be a u64: ".to_string() + &e.to_string()
+            }),
+            Ok(v) => v
+        }
+    };
+    let msg = match cmd.args.get(2){
+        None => "Reminder",
+        Some(v) => v
+    };
+
+    let id = (COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1).to_string();
+
+    tokio::spawn(delayed_send(secs, msg.to_string() + "\r\nSequence: " + &id, sender.clone()).map_err(|_|()));
+
+    tokio::spawn(sender.send("OK\r\nSequence: ".to_string() + &id).map_err(|_|()).map(|_|()));
+
+
+    Ok(())
+
+   
 
 }
 
@@ -39,7 +92,8 @@ fn main() -> std::result::Result<(), server::err::ConnectionError> {
 
     {
         Arc::get_mut(&mut server).unwrap()
-            .handle("echo".to_string(), echo);
+            .handle("echo", echo)
+            .handle("remind", remind);
     }
 
     let listener = TcpListener::bind(&"127.0.0.1:4888".parse::<std::net::SocketAddr>()?)?;

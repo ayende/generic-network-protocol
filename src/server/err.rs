@@ -16,7 +16,9 @@ custom_error! {
     InvalidCertiicateCert = "Failed to authenticate a client certificate (invalid)",
     InvalidCommand{cmd: String} = "Invalid command {cmd}",
     WriteError{source: futures::sync::mpsc::SendError<std::string::String>} = "Unable to send message: {source}",
-    ImpossibleError = "This shouldn't happen"
+    ImpossibleError = "This shouldn't happen",
+    BadDataArgs{msg: String} = "Unable to parse command args: {msg}",
+    TimerError{source: tokio::timer::Error} = "Unable to setup timer: {source}"
 }
 
 impl ConnectionError {
