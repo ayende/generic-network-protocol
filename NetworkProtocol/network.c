@@ -81,7 +81,7 @@ server_state_t* server_state_create(server_state_init_t* options) {
 	}
 
 	if (!configure_context(state->ctx, options->cert, options->key)) {
-		free(state);
+		server_state_drop(state);
 		push_ssl_errors();
 		push_error(EINVAL, "Unable to configure SSL ctx with provided cert(%s) / key (%s)", options->cert, options->key);
 		return NULL;
